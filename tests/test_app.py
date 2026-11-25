@@ -1,7 +1,16 @@
+from concurrent.futures import ThreadPoolExecutor
+import time
+
 import pytest
 from fastapi.testclient import TestClient
 
 import src.app as app_module
+
+
+class SlowMembershipList(list):
+    def __contains__(self, value):
+        time.sleep(0.02)
+        return super().__contains__(value)
 
 
 @pytest.fixture
@@ -71,6 +80,24 @@ def test_signup_updates_activities(client):
     ]
 
 
+def test_concurrent_signup_only_adds_student_once(client, activity_data):
+    email = "new+student@example.com"
+    activity_data["Chess Club"]["participants"] = SlowMembershipList(
+        activity_data["Chess Club"]["participants"]
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(
+            lambda _: client.post(
+                "/activities/Chess%20Club/signup", params={"email": email}
+            ),
+            range(2),
+        ))
+
+    assert sorted(response.status_code for response in responses) == [200, 400]
+    assert activity_data["Chess Club"]["participants"].count(email) == 1
+
+
 @pytest.mark.parametrize(
     ("activity", "email", "status", "detail"),
     [
@@ -104,6 +131,24 @@ def test_unregister_updates_activities(client):
     assert response.status_code == 200
     assert response.json() == {"message": f"Unregistered {email} from Chess Club"}
     assert activities["Chess Club"]["participants"] == []
+
+
+def test_concurrent_unregister_returns_not_found_after_first_removal(client, activity_data):
+    email = "existing@example.com"
+    activity_data["Chess Club"]["participants"] = SlowMembershipList(
+        activity_data["Chess Club"]["participants"]
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(
+            lambda _: client.delete(
+                "/activities/Chess%20Club/participants", params={"email": email}
+            ),
+            range(2),
+        ))
+
+    assert sorted(response.status_code for response in responses) == [200, 404]
+    assert email not in activity_data["Chess Club"]["participants"]
 
 
 @pytest.mark.parametrize(
